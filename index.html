@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>多人协同应急处突模拟与评价 · 原型</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Segoe UI",system-ui,Arial,sans-serif;background:#0d1117;color:#e6edf3;display:flex;height:100vh;overflow:hidden}
+#main{flex:1;display:flex;flex-direction:column}
+header{padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header h1{font-size:16px;font-weight:700}
+button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
+button.sec{background:#21262d;border:1px solid #30363d}
+button:hover{filter:brightness(1.1)}
+#canvasWrap{flex:1;display:flex;align-items:center;justify-content:center;background:#010409;position:relative}
+canvas{border:1px solid #30363d;background:#0b0f14}
+#side{width:320px;background:#161b22;border-left:1px solid #30363d;padding:14px;overflow-y:auto;font-size:13px}
+.card{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px;margin-bottom:12px}
+.card h3{font-size:13px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+.row{display:flex;justify-content:space-between;margin:4px 0}
+.k{color:#8b949e}.v{color:#3fb950;font-weight:700}
+.log{font-size:12px;color:#c9d1d9;line-height:1.6;max-height:120px;overflow-y:auto}
+.bar{height:8px;background:#21262d;border-radius:4px;overflow:hidden;margin:4px 0}
+.bar>span{display:block;height:100%;background:#1f6feb}
+.radio{display:flex;gap:8px;margin:6px 0}
+select,input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:4px 6px;font-size:13px}
+.hint{color:#8b949e;font-size:11px;margin-top:4px}
+</style>
+</head>
+<body>
+<div id="main">
+  <header>
+    <h1>🛡 多人协同应急处突模拟与评价（原型）</h1>
+    <button id="start">▶ 开始演练</button>
+    <button id="stop" class="sec">⏸ 暂停</button>
+    <button id="reset" class="sec">↺ 重置</button>
+    <div class="radio">
+      <label><input type="radio" name="view" value="2d" checked> 二维态势</label>
+      <label><input type="radio" name="view" value="3d"> 三维等距</label>
+    </div>
+    <span class="hint">点击画布=调度所选资源前往该格</span>
+  </header>
+  <div id="canvasWrap"><canvas id="cv" width="720" height="600"></canvas></div>
+</div>
+<div id="side">
+  <div class="card">
+    <h3>事件态势</h3>
+    <div class="row"><span class="k">Tick</span><span class="v" id="tick">0</span></div>
+    <div class="row"><span class="k">事件强度</span><span class="v" id="intensity">-</span></div>
+    <div class="row"><span class="k">影响半径</span><span class="v" id="radius">-</span></div>
+    <div class="row"><span class="k">演练状态</span><span class="v" id="running">停止</span></div>
+  </div>
+  <div class="card">
+    <h3>席位调度</h3>
+    <div class="row"><span class="k">选择资源</span>
+      <select id="resSel"></select></div>
+    <div class="hint">在画布上点击目标格，下发调度指令</div>
+  </div>
+  <div class="card">
+    <h3>综合评价</h3>
+    <div id="scores"><span class="hint">演练结束后自动评分</span></div>
+  </div>
+  <div class="card">
+    <h3>处置日志</h3>
+    <div class="log" id="log"></div>
+  </div>
+  <div class="card">
+    <h3>回放</h3>
+    <input type="range" id="replay" min="0" max="0" value="0" style="width:100%">
+    <div class="hint">拖动回放时间轴（需先运行产生时间帧）</div>
+  </div>
+</div>
+<script>
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const GRID=20, CELL=Math.min(cv.width,cv.height)/GRID;
+let view='2d', snap=null, replayFrame=null;
+
+function draw2d(s){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  // grid
+  ctx.strokeStyle='#161b22';
+  for(let i=0;i<=GRID;i++){ctx.beginPath();ctx.moveTo(i*CELL,0);ctx.lineTo(i*CELL,cv.height);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*CELL);ctx.lineTo(cv.width,i*CELL);ctx.stroke();}
+  if(!s)return;
+  const ev=s.event;
+  // event heat
+  const r=ev.radius*CELL;
+  const grad=ctx.createRadialGradient(ev.x*CELL+CELL/2,ev.y*CELL+CELL/2,4,ev.x*CELL+CELL/2,ev.y*CELL+CELL/2,r*1.6);
+  grad.addColorStop(0,`rgba(248,81,73,${0.7*ev.intensity})`);grad.addColorStop(1,'rgba(248,81,73,0)');
+  ctx.fillStyle=grad;ctx.beginPath();ctx.arc(ev.x*CELL+CELL/2,ev.y*CELL+CELL/2,r*1.6,0,7);ctx.fill();
+  // resources
+  const col={fire:'#ff7b00',medical:'#3fb950',police:'#58a6ff'};
+  (s.resources||[]).forEach(rp=>{
+    ctx.fillStyle=col[rp.type]||'#e6edf3';
+    ctx.beginPath();ctx.arc(rp.x*CELL+CELL/2,rp.y*CELL+CELL/2,CELL*0.32,0,7);ctx.fill();
+    if(rp.busy){ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}
+    ctx.fillStyle='#fff';ctx.font='9px monospace';ctx.fillText(rp.id,rp.x*CELL+2,rp.y*CELL+CELL-3);
+  });
+}
+function iso(x,y,z){const sx=cv.width/2+(x-y)*CELL*0.7,sy=cv.height/2+(x+y)*CELL*0.35-z*CELL;return[sx,sy];}
+function draw3d(s){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!s)return;
+  // ground tiles
+  for(let x=0;x<GRID;x++)for(let y=0;y<GRID;y++){
+    const[px,py]=iso(x,y,0);ctx.fillStyle=((x+y)%2)?'#11161d':'#0d1117';
+    ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(px+CELL*0.7,py+CELL*0.35);ctx.lineTo(px,py+CELL*0.7);ctx.lineTo(px-CELL*0.7,py+CELL*0.35);ctx.closePath();ctx.fill();ctx.strokeStyle='#161b22';ctx.stroke();
+  }
+  const ev=s.event;const[ex,ey]=iso(ev.x,ev.y,0.4);
+  const grad=ctx.createRadialGradient(ex,ey,2,ex,ey,ev.radius*CELL*1.4);
+  grad.addColorStop(0,`rgba(248,81,73,${0.8*ev.intensity})`);grad.addColorStop(1,'rgba(248,81,73,0)');
+  ctx.fillStyle=grad;ctx.beginPath();ctx.arc(ex,ey,ev.radius*CELL*1.4,0,7);ctx.fill();
+  const col={fire:'#ff7b00',medical:'#3fb950',police:'#58a6ff'};
+  (s.resources||[]).forEach(rp=>{const[px,py]=iso(rp.x,rp.y,0.4);ctx.fillStyle=col[rp.type]||'#e6edf3';ctx.beginPath();ctx.arc(px,py,5,0,7);ctx.fill();ctx.fillStyle='#fff';ctx.font='9px monospace';ctx.fillText(rp.id,px+6,py);});
+}
+function render(){
+  const s=replayFrame||snap;
+  if(view==='2d')draw2d(s);else draw3d(s);
+  if(s){
+    document.getElementById('tick').textContent=s.tick;
+    document.getElementById('intensity').textContent=(s.event?s.event.intensity.toFixed(2):'-');
+    document.getElementById('radius').textContent=(s.event?s.event.radius:'-');
+    document.getElementById('running').textContent=s.running?'进行中':'停止';
+    document.getElementById('log').innerHTML=(s.log||[]).map(l=>`<div>[t${l.t}] ${l.msg}</div>`).join('');
+    if(s.scores){
+      const sc=s.scores;
+      document.getElementById('scores').innerHTML=
+        scoreBar('时效',sc['时效'])+scoreBar('资源调度',sc['资源调度'])+scoreBar('流程合规',sc['流程合规'])+
+        `<div class="row"><span class="k">综合分</span><span class="v">${sc['综合']}</span></div>`+
+        `<div class="hint">用时 ${sc.ticks_used} tick，终态强度 ${sc.final_intensity}</div>`;
+    }
+  }
+}
+function scoreBar(name,v){return `<div class="row"><span class="k">${name}</span><span class="v">${v}</span></div><div class="bar"><span style="width:${v}%"></span></div>`;}
+function refreshSel(){
+  const sel=document.getElementById('resSel');if(!snap)return;
+  sel.innerHTML=(snap.resources||[]).map(r=>`<option value="${r.id}">${r.id} (${r.type})</option>`).join('');
+}
+// SSE
+const es=new EventSource('/api/stream');
+es.onmessage=e=>{snap=JSON.parse(e.data);if(!replayFrame){render();refreshSel();}};
+// controls
+document.getElementById('start').onclick=()=>fetch('/api/start',{method:'POST'});
+document.getElementById('stop').onclick=()=>fetch('/api/stop',{method:'POST'});
+document.getElementById('reset').onclick=()=>{replayFrame=null;fetch('/api/reset',{method:'POST'});};
+document.querySelectorAll('input[name=view]').forEach(r=>r.onchange=e=>{view=e.target.value;render();});
+cv.onclick=e=>{
+  const rect=cv.getBoundingClientRect();const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+  let gx,gy;
+  if(view==='2d'){gx=Math.floor(mx/CELL);gy=Math.floor(my/CELL);}
+  else{// inverse approx from iso center
+    const dx=mx-cv.width/2,dy=my-cv.height/2;gy=(dy/CELL/0.35-dx/CELL/0.7)/2;gx=gy+dx/CELL/0.7;
+  }
+  gx=Math.max(0,Math.min(GRID-1,Math.round(gx)));gy=Math.max(0,Math.min(GRID-1,Math.round(gy)));
+  const rid=document.getElementById('resSel').value;
+  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resource:rid,x:gx,y:gy})});
+};
+// replay slider
+const rp=document.getElementById('replay');
+rp.oninput=()=>{
+  if(!snap||!snap.timeline_len)return;
+  fetch('/api/replay').then(r=>r.json()).then(d=>{
+    const f=d.timeline[parseInt(rp.value)];
+    if(f)replayFrame={tick:f.tick,event:f.event,resources:f.resources,running:false,log:[],scores:snap.scores,timeline_len:snap.timeline_len};
+    render();
+  });
+};
+render();
+</script>
+</body>
+</html>
